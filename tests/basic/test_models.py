@@ -558,6 +558,145 @@ class TestModels(unittest.TestCase):
             timeout=600,
         )
 
+    @patch("aider.models.litellm.completion")
+    def test_gigachat_models_use_custom_completion(self, mock_completion):
+        """Test that GigaChat models use the custom completion method instead of litellm."""
+        model = Model("gigachat/GigaChat-2:latest")
+        messages = [{"role": "user", "content": "Hello"}]
+        
+        # This should not call litellm.completion since GigaChat models use custom method
+        model.send_completion(messages, functions=None, stream=False)
+        
+        # Verify litellm.completion was not called
+        mock_completion.assert_not_called()
+
+    @patch("giga.GigaChat")
+    def test_gigachat_completion_success(self, mock_giga_class):
+        """Test successful GigaChat completion."""
+        # Setup mock GigaChat client
+        mock_giga_client = mock_giga_class.return_value
+        mock_giga_client.chat.return_value = ["Hello! How can I help you?"]
+        
+        model = Model("gigachat/GigaChat-2:latest")
+        messages = [{"role": "user", "content": "Hello"}]
+        
+        # Call the custom GigaChat completion method
+        hash_obj, response = model.send_completion(
+            messages=messages, functions=None, stream=False, temperature=0.5
+        )
+        
+        # Verify the response structure
+        self.assertIsNotNone(response)
+        self.assertIsNotNone(response.choices)
+        self.assertEqual(len(response.choices), 1)
+        self.assertEqual(response.choices[0].message.content, "Hello! How can I help you?")
+        
+        # Verify GigaChat client was called correctly
+        mock_giga_client.chat.assert_called_once_with(
+            messages=messages,
+            model="GigaChat-2:latest",  # Prefix should be removed
+            temperature=0.5,
+            top_p=1.0,
+            max_tokens=8192
+        )
+
+    @patch("giga.GigaChat")
+    def test_gigachat_completion_with_max_tokens(self, mock_giga_class):
+        """Test GigaChat completion with custom max_tokens."""
+        mock_giga_client = mock_giga_class.return_value
+        mock_giga_client.chat.return_value = ["Short response"]
+        
+        model = Model("gigachat/GigaChat-2:latest")
+        messages = [{"role": "user", "content": "Hello"}]
+        
+        hash_obj, response = model.send_completion(
+            messages, functions=None, stream=False, temperature=0.0
+        )
+        
+        # Verify max_tokens was passed correctly
+        mock_giga_client.chat.assert_called_once_with(
+            messages=messages,
+            model="GigaChat-2:latest",
+            temperature=0.0,
+            top_p=1.0,
+            max_tokens=100
+        )
+
+    @patch("giga.GigaChat")
+    def test_gigachat_completion_functions_not_supported(self, mock_giga_class):
+        """Test that function calling raises NotImplementedError."""
+        mock_giga_client = mock_giga_class.return_value
+        
+        model = Model("gigachat/GigaChat-2:latest")
+        messages = [{"role": "user", "content": "Hello"}]
+        functions = [{"name": "test_func", "parameters": {}}]
+        
+        with self.assertRaises(NotImplementedError) as context:
+            model.send_completion(
+                messages, functions=functions, stream=False, temperature=0.0
+            )
+        
+        self.assertIn("Function calling is not yet supported", str(context.exception))
+
+    @patch("giga.GigaChat")
+    def test_gigachat_completion_streaming_not_supported(self, mock_giga_class):
+        """Test that streaming raises NotImplementedError."""
+        mock_giga_client = mock_giga_class.return_value
+        
+        model = Model("gigachat/GigaChat-2:latest")
+        messages = [{"role": "user", "content": "Hello"}]
+        
+        with self.assertRaises(NotImplementedError) as context:
+            model.send_completion(
+                messages, functions=None, stream=True, temperature=0.0
+            )
+        
+        self.assertIn("Streaming is not yet supported", str(context.exception))
+
+    @patch("giga.GigaChat")
+    def test_gigachat_completion_empty_response(self, mock_giga_class):
+        """Test handling of empty response from GigaChat."""
+        mock_giga_client = mock_giga_class.return_value
+        mock_giga_client.chat.return_value = []
+        
+        model = Model("gigachat/GigaChat-2:latest")
+        messages = [{"role": "user", "content": "Hello"}]
+        
+        hash_obj, response = model.send_completion(
+            messages, functions=None, stream=False, temperature=0.0
+        )
+        
+        # Verify empty response is handled gracefully
+        self.assertEqual(response.choices[0].message.content, "")
+
+    @patch("giga.GigaChat")
+    def test_gigachat_completion_import_error(self, mock_giga_class):
+        """Test handling of import error when lightweight-gigachat is not available."""
+        # Simulate import error
+        mock_giga_class.side_effect = ImportError("No module named 'lightweight_gigachat'")
+        
+        model = Model("gigachat/GigaChat-2:latest")
+        messages = [{"role": "user", "content": "Hello"}]
+        
+        with self.assertRaises(ImportError) as context:
+            model.send_completion(
+                messages, functions=None, stream=False, temperature=0.0
+            )
+        
+        self.assertIn("GigaChat integration requires the lightweight-gigachat library", str(context.exception))
+
+    def test_is_gigachat_method(self):
+        """Test the is_gigachat method correctly identifies GigaChat models."""
+        # Test GigaChat models
+        self.assertTrue(Model("gigachat/GigaChat-2:latest").is_gigachat())
+        self.assertTrue(Model("gigachat/GigaChat-Pro:latest").is_gigachat())
+        self.assertTrue(Model("gigachat/GigaChat-2.5:latest").is_gigachat())
+        
+        # Test non-GigaChat models
+        self.assertFalse(Model("gpt-4").is_gigachat())
+        self.assertFalse(Model("claude-3-sonnet").is_gigachat())
+        self.assertFalse(Model("ollama/llama3").is_gigachat())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -98,6 +98,12 @@ MODEL_ALIASES = {
     "quasar": "openrouter/openrouter/quasar-alpha",
     "r1": "deepseek/deepseek-reasoner",
     "gemini-2.5-pro": "gemini/gemini-2.5-pro",
+    # GigaChat models
+    "gigachat": "gigachat/GigaChat-2:latest",
+    "gigachat-2": "gigachat/GigaChat-2:latest",
+    "gigachat-pro": "gigachat/GigaChat-Pro:latest",
+    "gigachat-2.5": "gigachat/GigaChat-2.5:latest",
+    "gigachat-max": "gigachat/GigaChatMax:latest",
     "gemini": "gemini/gemini-2.5-pro",
     "gemini-exp": "gemini/gemini-2.5-pro-exp-03-25",
     "grok3": "xai/grok-3-beta",
@@ -895,6 +901,9 @@ class Model(ModelSettings):
     def is_ollama(self):
         return self.name.startswith("ollama/") or self.name.startswith("ollama_chat/")
 
+    def is_gigachat(self):
+        return self.name.startswith("gigachat/")
+
     def github_copilot_token_to_open_ai_key(self, extra_headers):
         # check to see if there's an openai api key
         # If so, check to see if it's expire
@@ -997,8 +1006,106 @@ class Model(ModelSettings):
 
             self.github_copilot_token_to_open_ai_key(kwargs["extra_headers"])
 
+        # Handle GigaChat models with custom giga library
+        if self.is_gigachat():
+            return self._send_gigachat_completion(messages, functions, stream, temperature, hash_object, kwargs)
+        
         res = litellm.completion(**kwargs)
         return hash_object, res
+
+    def _send_gigachat_completion(self, messages, functions, stream, temperature, hash_object, kwargs):
+        """
+        Send completion request to GigaChat using the lightweight-gigachat library.
+        
+        This method handles GigaChat-specific API calls and returns a response object
+        that matches the structure expected by the rest of the aider system.
+        
+        Args:
+            messages: List of message dictionaries with 'role' and 'content'
+            functions: Optional list of function definitions (not supported by GigaChat yet)
+            stream: Whether to stream the response (not supported by GigaChat yet)
+            temperature: Temperature for response generation
+            hash_object: Hash object for caching
+            kwargs: Additional keyword arguments
+            
+        Returns:
+            Tuple of (hash_object, response_object) where response_object mimics litellm response
+        """
+        try:
+            # Import the lightweight-gigachat library
+            from giga import GigaChat
+            
+            # Check if functions are provided (not supported by GigaChat yet)
+            if functions:
+                raise NotImplementedError("Function calling is not yet supported by GigaChat integration")
+            
+            # Check if streaming is requested (not supported by GigaChat yet)
+            if stream:
+                raise NotImplementedError("Streaming is not yet supported by GigaChat integration")
+            
+            # Initialize GigaChat client
+            giga_client = GigaChat()
+            
+            # Prepare messages for GigaChat API
+            # GigaChat expects messages in the format: [{"role": "user", "content": "message"}]
+            giga_messages = []
+            for msg in messages:
+                if msg.get("role") in ["user", "assistant", "system"]:
+                    giga_messages.append({
+                        "role": msg["role"],
+                        "content": msg["content"]
+                    })
+            
+            # Set default temperature if not provided
+            if temperature is None:
+                temperature = 0.0
+            
+            # Get max_tokens from kwargs if available, otherwise use default
+            max_tokens = kwargs.get("max_tokens", 8192)
+            # giga_messages = [giga_messages[-2]]
+            # print(giga_messages)
+            # Call GigaChat API
+            response_content = giga_client.chat(
+                messages=giga_messages,
+                model=self.name.replace("gigachat/", ""),  # Remove prefix for GigaChat API
+                temperature=temperature,
+                top_p=1.0,  # Default top_p value
+                max_tokens=max_tokens
+            )
+            
+            # Extract the response content (GigaChat returns a list, we take the first response)
+            if response_content and len(response_content) > 0:
+                content = response_content["choices"][0]["message"]["content"]
+            else:
+                content = ""
+            
+            # Create a response object that mimics litellm response structure
+            class MockMessage:
+                    def __init__(self, content):
+                        self.content = content
+                        
+            class MockChoice:
+                def __init__(self, content):
+                    self.message = MockMessage(content)
+            
+            class MockResponse:
+                def __init__(self, content):
+                    self.choices = [MockChoice(content)]
+            
+            response = MockResponse(content)
+            
+            return hash_object, response
+            
+        except ImportError:
+            raise ImportError(
+                "GigaChat integration requires the lightweight-gigachat library. "
+                "Please install it with: pip install git+https://git@gitlab.com/ru.ush/lightweight-gigachat.git@module"
+            )
+        except Exception as e:
+            # Log the error for debugging
+            if self.verbose:
+                print(f"GigaChat API error: {str(e)}")
+            raise e
 
     def simple_send_with_retries(self, messages):
         from aider.exceptions import LiteLLMExceptions
@@ -1185,6 +1292,14 @@ def check_for_dependencies(io, model_name):
             "google.cloud.aiplatform",
             "Google Vertex AI models require the google-cloud-aiplatform package.",
             ["google-cloud-aiplatform"],
+        )
+    # Check if this is a GigaChat model and ensure giga library is installed
+    elif model_name.startswith("gigachat/"):
+        check_pip_install_extra(
+            io,
+            "giga",
+            "GigaChat models require the giga library.",
+            ["giga @ git+https://git@gitlab.com/ru.ush/lightweight-gigachat.git@module"],
         )
 
 
